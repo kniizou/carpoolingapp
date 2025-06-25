@@ -7,7 +7,7 @@ public class User {
     private int age;
     private String email;
     private String password;
-    private String role; // "ADMIN", "DRIVER", "PASSENGER"
+    private UserRole role;
 
     public User(String id, String nom, String prenom, int age, String email, String password, String role) {
         if (nom == null || nom.trim().isEmpty()) {
@@ -25,8 +25,41 @@ public class User {
         if (password == null || password.length() < 6) {
             throw new IllegalArgumentException("Le mot de passe doit contenir au moins 6 caractères");
         }
-        if (role == null || (!role.equalsIgnoreCase("ADMIN") && !role.equalsIgnoreCase("DRIVER") && !role.equalsIgnoreCase("PASSENGER"))) {
-            throw new IllegalArgumentException("Le rôle n'est pas valide");
+
+        this.id = id;
+        this.nom = nom.trim();
+        this.prenom = prenom.trim();
+        this.age = age;
+        this.email = email.toLowerCase().trim();
+        this.password = password;
+        this.role = UserRole.fromCode(role);
+    }
+
+    public User(String nom, String prenom, int age, String email, String password, String role) {
+        this(java.util.UUID.randomUUID().toString(), nom, prenom, age, email, password, role);
+    }
+    
+    /**
+     * Constructor with UserRole enum.
+     */
+    public User(String id, String nom, String prenom, int age, String email, String password, UserRole role) {
+        if (nom == null || nom.trim().isEmpty()) {
+            throw new IllegalArgumentException("Le nom ne peut pas être vide");
+        }
+        if (prenom == null || prenom.trim().isEmpty()) {
+            throw new IllegalArgumentException("Le prénom ne peut pas être vide");
+        }
+        if (age < 18) {
+            throw new IllegalArgumentException("L'âge doit être supérieur ou égal à 18 ans");
+        }
+        if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+            throw new IllegalArgumentException("L'email n'est pas valide");
+        }
+        if (password == null || password.length() < 6) {
+            throw new IllegalArgumentException("Le mot de passe doit contenir au moins 6 caractères");
+        }
+        if (role == null) {
+            throw new IllegalArgumentException("Le rôle ne peut pas être null");
         }
 
         this.id = id;
@@ -35,10 +68,13 @@ public class User {
         this.age = age;
         this.email = email.toLowerCase().trim();
         this.password = password;
-        this.role = role.toUpperCase();
+        this.role = role;
     }
-
-    public User(String nom, String prenom, int age, String email, String password, String role) {
+    
+    /**
+     * Constructor with UserRole enum (auto-generates ID).
+     */
+    public User(String nom, String prenom, int age, String email, String password, UserRole role) {
         this(java.util.UUID.randomUUID().toString(), nom, prenom, age, email, password, role);
     }
 
@@ -68,6 +104,15 @@ public class User {
     }
 
     public String getRole() {
+        return role.getCode();
+    }
+    
+    /**
+     * Gets the user role as an enum.
+     * 
+     * @return The UserRole enum value
+     */
+    public UserRole getUserRole() {
         return role;
     }
 
@@ -116,10 +161,19 @@ public class User {
     }
 
     public void setRole(String role) {
-        if (role == null || (!role.equalsIgnoreCase("ADMIN") && !role.equalsIgnoreCase("DRIVER") && !role.equalsIgnoreCase("PASSENGER"))) {
-            throw new IllegalArgumentException("Le rôle n'est pas valide");
+        this.role = UserRole.fromCode(role);
+    }
+    
+    /**
+     * Sets the user role using an enum.
+     * 
+     * @param role The UserRole enum value
+     */
+    public void setUserRole(UserRole role) {
+        if (role == null) {
+            throw new IllegalArgumentException("Le rôle ne peut pas être null");
         }
-        this.role = role.toUpperCase();
+        this.role = role;
     }
 
     @Override

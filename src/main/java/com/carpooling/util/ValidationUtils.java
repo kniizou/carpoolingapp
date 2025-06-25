@@ -85,4 +85,22 @@ public class ValidationUtils {
     public static String normalizeString(String str) {
         return str != null ? str.trim() : null;
     }
-} 
+
+    /**
+     * Check if time format is valid without throwing exception
+     * @param time the time string to validate
+     * @return true if time format is valid, false otherwise
+     */
+    public static boolean isValidTimeFormat(String time) {
+        if (time == null || time.trim().isEmpty()) {
+            return false;
+        }
+        
+        try {
+            LocalTime.parse(time.trim(), DateTimeFormatter.ofPattern(Constants.TIME_FORMAT));
+            return true;
+        } catch (DateTimeParseException e) {
+            return false;
+        }
+    }
+}

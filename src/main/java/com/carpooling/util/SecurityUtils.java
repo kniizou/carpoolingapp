@@ -1,29 +1,51 @@
 package com.carpooling.util;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Base64;
+
+import org.mindrot.jbcrypt.BCrypt;
 
 public class SecurityUtils {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     
+    /**
+     * Hashes a password using BCrypt with automatically generated salt.
+     * BCrypt includes salt generation and storage in the hash itself.
+     * 
+     * @param password The plain text password to hash
+     * @return The BCrypt hashed password (includes salt)
+     */
     public static String hashPassword(String password) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] hash = md.digest(password.getBytes());
-            return Base64.getEncoder().encodeToString(hash);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException("Erreur lors du hachage du mot de passe", e);
+        if (password == null) {
+            throw new IllegalArgumentException("Password cannot be null");
         }
+        return BCrypt.hashpw(password, BCrypt.gensalt());
     }
     
+    /**
+     * Verifies a password against a BCrypt hash.
+     * 
+     * @param password The plain text password to verify
+     * @param hashedPassword The BCrypt hash to verify against
+     * @return true if password matches the hash, false otherwise
+     */
     public static boolean verifyPassword(String password, String hashedPassword) {
-        String hashedInput = hashPassword(password);
-        return hashedInput.equals(hashedPassword);
+        if (password == null || hashedPassword == null) {
+            return false;
+        }
+        try {
+            return BCrypt.checkpw(password, hashedPassword);
+        } catch (IllegalArgumentException e) {
+            // Invalid hash format
+            return false;
+        }
     }
 
+    /**
+     * @deprecated Use hashPassword(String) instead. BCrypt handles salt automatically.
+     */
+    @Deprecated
     public static String generateSalt() {
         StringBuilder salt = new StringBuilder(16);
         for (int i = 0; i < 16; i++) {
@@ -32,21 +54,22 @@ public class SecurityUtils {
         return salt.toString();
     }
 
+    /**
+     * @deprecated Use hashPassword(String) instead. BCrypt handles salt automatically.
+     */
+    @Deprecated
     public static String hashPasswordWithSalt(String password, String salt) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(salt.getBytes());
-            byte[] hash = digest.digest(password.getBytes());
-            return Base64.getEncoder().encodeToString(hash);
-        } catch (NoSuchAlgorithmException e) {
-            LoggerUtils.error("Erreur lors du hachage du mot de passe avec sel", e);
-            throw new RuntimeException("Erreur lors du hachage du mot de passe avec sel", e);
-        }
+        // For backward compatibility, fallback to BCrypt
+        return hashPassword(password);
     }
 
+    /**
+     * @deprecated Use verifyPassword(String, String) instead.
+     */
+    @Deprecated
     public static boolean verifyPasswordWithSalt(String password, String hashedPassword, String salt) {
-        String hashedInput = hashPasswordWithSalt(password, salt);
-        return hashedInput.equals(hashedPassword);
+        // For backward compatibility, use BCrypt verification
+        return verifyPassword(password, hashedPassword);
     }
 
     public static String generateToken() {

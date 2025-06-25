@@ -1,23 +1,44 @@
 package com.carpooling.ui;
 
-import com.carpooling.data.DataManager;
-import com.carpooling.model.User;
-import com.carpooling.model.Trip;
-import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Font;
 import java.util.List;
 
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTable;
+import javax.swing.ListSelectionModel;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.table.DefaultTableModel;
+
+import com.carpooling.model.Trip;
+import com.carpooling.model.User;
+import com.carpooling.service.IAuthService;
+import com.carpooling.service.ITripService;
+import com.carpooling.service.IUserService;
+
 public class AdminDashboard extends JFrame {
-    private DataManager dataManager;
+    private final IAuthService authService;
+    private final IUserService userService;
+    private final ITripService tripService;
     private JTabbedPane tabbedPane;
     private JTable usersTable;
     private JTable tripsTable;
     private DefaultTableModel usersTableModel;
     private DefaultTableModel tripsTableModel;
+    private NotificationPanel notificationPanel;
 
-    public AdminDashboard() {
-        dataManager = DataManager.getInstance();
+    public AdminDashboard(IAuthService authService, IUserService userService, ITripService tripService) {
+        this.authService = authService;
+        this.userService = userService;
+        this.tripService = tripService;
         
         setTitle("Dashboard Administrateur");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -46,10 +67,19 @@ public class AdminDashboard extends JFrame {
         JButton logoutButton = new JButton("Déconnexion");
         logoutButton.setBackground(Color.WHITE);
         logoutButton.setForeground(primaryColor);
-        logoutButton.addActionListener(_ -> handleLogout());
+        logoutButton.addActionListener(e -> handleLogout());
         headerPanel.add(logoutButton, BorderLayout.EAST);
         
-        mainPanel.add(headerPanel, BorderLayout.NORTH);
+        // Create notification panel for admin
+        User currentUser = authService.getCurrentUser();
+        notificationPanel = new NotificationPanel(currentUser);
+        
+        // Create top panel with header and notifications
+        JPanel topPanel = new JPanel(new BorderLayout());
+        topPanel.add(headerPanel, BorderLayout.NORTH);
+        topPanel.add(notificationPanel, BorderLayout.CENTER);
+        
+        mainPanel.add(topPanel, BorderLayout.NORTH);
         
         // Onglets
         tabbedPane = new JTabbedPane();
@@ -70,6 +100,11 @@ public class AdminDashboard extends JFrame {
         // Charger les données
         refreshUsersTable();
         refreshTripsTable();
+        
+        // Show toast notifications for admin
+        SwingUtilities.invokeLater(() -> {
+            ToastNotificationManager.getInstance().showToastsForUser(currentUser.getId());
+        });
     }
     
     private JPanel createUsersPanel() {
@@ -95,7 +130,7 @@ public class AdminDashboard extends JFrame {
         buttonPanel.setBackground(Color.WHITE);
         
         JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(_ -> refreshUsersTable());
+        refreshButton.addActionListener(e -> refreshUsersTable());
         buttonPanel.add(refreshButton);
         
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -126,7 +161,7 @@ public class AdminDashboard extends JFrame {
         buttonPanel.setBackground(Color.WHITE);
         
         JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(_ -> refreshTripsTable());
+        refreshButton.addActionListener(e -> refreshTripsTable());
         buttonPanel.add(refreshButton);
         
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -136,7 +171,7 @@ public class AdminDashboard extends JFrame {
     
     private void refreshUsersTable() {
         usersTableModel.setRowCount(0);
-        List<User> users = dataManager.getAllUsers();
+        List<User> users = userService.getAllUsers();
         
         for (User user : users) {
             Object[] row = {
@@ -150,7 +185,7 @@ public class AdminDashboard extends JFrame {
     
     private void refreshTripsTable() {
         tripsTableModel.setRowCount(0);
-        List<Trip> trips = dataManager.getAllTrips();
+        List<Trip> trips = tripService.getAllTrips();
         
         for (Trip trip : trips) {
             Object[] row = {
@@ -168,8 +203,9 @@ public class AdminDashboard extends JFrame {
     }
     
     private void handleLogout() {
-        dataManager.logout();
+        authService.logout();
         dispose();
-        new LoginFrame().setVisible(true);
+        // Note: Creating LoginFrame would create circular dependency
+        // This will be handled by application controller
     }
-} 
+}

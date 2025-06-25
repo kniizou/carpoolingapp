@@ -1,20 +1,49 @@
 package com.carpooling.ui;
 
-import com.carpooling.data.DataManager;
-import com.carpooling.model.Trip;
-import com.carpooling.model.User;
-import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import java.awt.*;
-import java.util.List;
-import java.util.logging.Logger;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.GridLayout;
+import java.awt.Insets;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JDialog;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.JTable;
+import javax.swing.JTextField;
+import javax.swing.ListSelectionModel;
+import javax.swing.table.DefaultTableModel;
+
+import com.carpooling.model.Trip;
+import com.carpooling.model.User;
+import com.carpooling.service.IAuthService;  // Temporary for transition
+import com.carpooling.service.ITripService;
+import com.carpooling.service.IUserService;
+import com.carpooling.ui.validation.UIValidationHelper;
+import com.carpooling.websocket.NotificationWebSocketClient;
 import com.github.lgooddatepicker.components.DatePicker;
 import com.github.lgooddatepicker.components.DatePickerSettings;
-import java.time.DayOfWeek;
-import java.util.ArrayList;
-import java.util.logging.Level;
 
 public class DriverDashboard extends JFrame {
     private static final long serialVersionUID = 1L;
@@ -27,9 +56,15 @@ public class DriverDashboard extends JFrame {
     private static final Color TABLE_GRID_COLOR = new Color(200, 200, 200);
     private static final Color TABLE_SELECTION_COLOR = new Color(230, 230, 230);
     
-    private final DataManager dataManager;
+    // Services - for future full refactoring
+    private final IAuthService authService;
+    private final IUserService userService;
+    private final ITripService tripService;
+    
     private final User currentUser;
     private Trip selectedTrip;
+    private NotificationWebSocketClient webSocketClient;
+    private NotificationPanel notificationPanel;
     
     private JTable tripsTable;
     private DefaultTableModel tripsTableModel;
@@ -46,15 +81,16 @@ public class DriverDashboard extends JFrame {
     private DatePicker datePicker;
     private JPanel recurringDaysPanel;
     
-    public DriverDashboard() {
+    public DriverDashboard(IAuthService authService, IUserService userService, ITripService tripService) {
+        this.authService = authService;
+        this.userService = userService;
+        this.tripService = tripService;
+        this.currentUser = authService.getCurrentUser();
+        
         setTitle("Tableau de bord conducteur");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(1600, 1000);
         setLocationRelativeTo(null);
-        
-        // Initialisation des composants
-        dataManager = DataManager.getInstance();
-        currentUser = dataManager.getCurrentUser();
         
         // Création du panneau principal
         JPanel mainPanel = new JPanel(new BorderLayout());
@@ -78,14 +114,23 @@ public class DriverDashboard extends JFrame {
         logoutButton.setBorderPainted(false);
         logoutButton.setFocusPainted(false);
         logoutButton.setBorder(BorderFactory.createEmptyBorder(5, 15, 5, 15));
-        logoutButton.addActionListener(_ -> {
-            dataManager.logout();
+        logoutButton.addActionListener(e -> {
+            authService.logout();
             dispose();
-            new LoginFrame().setVisible(true);
+            // Note: Creating LoginFrame would create circular dependency
+            // This will be handled by application controller
         });
         headerPanel.add(logoutButton, BorderLayout.EAST);
         
-        mainPanel.add(headerPanel, BorderLayout.NORTH);
+        // Create notification panel for driver
+        notificationPanel = new NotificationPanel(currentUser);
+        
+        // Create top panel with header and notifications
+        JPanel topPanel = new JPanel(new BorderLayout());
+        topPanel.add(headerPanel, BorderLayout.NORTH);
+        topPanel.add(notificationPanel, BorderLayout.CENTER);
+        
+        mainPanel.add(topPanel, BorderLayout.NORTH);
         
         // Contenu principal
         JSplitPane contentSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
@@ -119,26 +164,32 @@ public class DriverDashboard extends JFrame {
         departureField = new JTextField();
         departureField.setFont(MAIN_FONT);
         departureField.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupRequiredTextValidation(departureField, "Départ");
         
         destinationField = new JTextField();
         destinationField.setFont(MAIN_FONT);
         destinationField.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupRequiredTextValidation(destinationField, "Destination");
         
         timeField = new JTextField();
         timeField.setFont(MAIN_FONT);
         timeField.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupTimeValidation(timeField);
         
         seatsField = new JTextField();
         seatsField.setFont(MAIN_FONT);
         seatsField.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupNumericValidation(seatsField, 1, "Places disponibles");
         
         priceField = new JTextField();
         priceField.setFont(MAIN_FONT);
         priceField.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupPriceValidation(priceField);
         
         tripTypeComboBox = new JComboBox<>(new String[]{"Occasionnel", "École", "Travail", "Courses"});
         tripTypeComboBox.setFont(MAIN_FONT);
         tripTypeComboBox.setPreferredSize(new Dimension(250, 30));
+        UIValidationHelper.setupComboBoxHighlighting(tripTypeComboBox);
         
         // DatePicker
         DatePickerSettings dateSettings = new DatePickerSettings();
@@ -173,7 +224,7 @@ public class DriverDashboard extends JFrame {
         addFormField(formPanel, gbc, "Jours récurrents:", recurringDaysScrollPane, MAIN_FONT);
         
         // Écouteur pour le type de trajet
-        tripTypeComboBox.addActionListener(_ -> {
+        tripTypeComboBox.addActionListener(e ->{
             String selectedType = (String) tripTypeComboBox.getSelectedItem();
             boolean isRecurring = !"Occasionnel".equals(selectedType);
             recurringDaysPanel.setVisible(isRecurring);
@@ -191,7 +242,7 @@ public class DriverDashboard extends JFrame {
         createButton.setFocusPainted(false);
         createButton.setBorderPainted(false);
         createButton.setPreferredSize(new Dimension(150, 35));
-        createButton.addActionListener(_ -> handleCreateTrip());
+        createButton.addActionListener(e ->handleCreateTrip());
         gbc.gridx = 0; gbc.gridy = 8;
         gbc.gridwidth = 2;
         formPanel.add(createButton, gbc);
@@ -241,7 +292,7 @@ public class DriverDashboard extends JFrame {
         tripsTable.setFillsViewportHeight(true);
         tripsTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         tripsTable.setPreferredScrollableViewportSize(new Dimension(750, 450));
-        tripsTable.getSelectionModel().addListSelectionListener(_ -> handleTripSelection());
+        tripsTable.getSelectionModel().addListSelectionListener(e ->handleTripSelection());
         
         // Ajuster la largeur des colonnes pour le tableau des trajets
         tripsTable.getColumnModel().getColumn(0).setPreferredWidth(50);  // ID
@@ -270,7 +321,7 @@ public class DriverDashboard extends JFrame {
         refreshTripsButton.setFocusPainted(false);
         refreshTripsButton.setBorderPainted(false);
         refreshTripsButton.setPreferredSize(new Dimension(150, 35));
-        refreshTripsButton.addActionListener(_ -> refreshTripsTable());
+        refreshTripsButton.addActionListener(e ->refreshTripsTable());
         
         JButton deleteTripButton = new JButton("Supprimer");
         deleteTripButton.setFont(HEADER_FONT);
@@ -279,7 +330,7 @@ public class DriverDashboard extends JFrame {
         deleteTripButton.setFocusPainted(false);
         deleteTripButton.setBorderPainted(false);
         deleteTripButton.setPreferredSize(new Dimension(150, 35));
-        deleteTripButton.addActionListener(_ -> handleDeleteTrip());
+        deleteTripButton.addActionListener(e ->handleDeleteTrip());
 
         JButton editTripButton = new JButton("Modifier");
         editTripButton.setFont(HEADER_FONT);
@@ -288,7 +339,7 @@ public class DriverDashboard extends JFrame {
         editTripButton.setFocusPainted(false);
         editTripButton.setBorderPainted(false);
         editTripButton.setPreferredSize(new Dimension(150, 35));
-        editTripButton.addActionListener(_ -> handleEditTrip());
+        editTripButton.addActionListener(e ->handleEditTrip());
 
         tripsActionPanel.add(refreshTripsButton);
         tripsActionPanel.add(deleteTripButton);
@@ -360,7 +411,7 @@ public class DriverDashboard extends JFrame {
         acceptButton.setFocusPainted(false);
         acceptButton.setBorderPainted(false);
         acceptButton.setPreferredSize(new Dimension(150, 35));
-        acceptButton.addActionListener(_ -> handleAcceptRequest());
+        acceptButton.addActionListener(e ->handleAcceptRequest());
 
         JButton rejectButton = new JButton("Refuser");
         rejectButton.setFont(HEADER_FONT);
@@ -369,7 +420,7 @@ public class DriverDashboard extends JFrame {
         rejectButton.setFocusPainted(false);
         rejectButton.setBorderPainted(false);
         rejectButton.setPreferredSize(new Dimension(150, 35));
-        rejectButton.addActionListener(_ -> handleRejectRequest());
+        rejectButton.addActionListener(e ->handleRejectRequest());
 
         JButton refreshButton = new JButton("Actualiser");
         refreshButton.setFont(HEADER_FONT);
@@ -378,7 +429,7 @@ public class DriverDashboard extends JFrame {
         refreshButton.setFocusPainted(false);
         refreshButton.setBorderPainted(false);
         refreshButton.setPreferredSize(new Dimension(150, 35));
-        refreshButton.addActionListener(_ -> refreshPendingPassengersTable());
+        refreshButton.addActionListener(e ->refreshPendingPassengersTable());
 
         buttonPanel.add(acceptButton);
         buttonPanel.add(rejectButton);
@@ -396,6 +447,15 @@ public class DriverDashboard extends JFrame {
         
         // Chargement initial des trajets
         refreshTripsTable();
+        
+        // Connect to WebSocket for real-time notifications
+        webSocketClient = NotificationWebSocketClient.getInstance();
+        webSocketClient.connectAndRegister(currentUser.getId());
+        
+        // Show toast notifications for any existing unread notifications
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            ToastNotificationManager.getInstance().showToastsForUser(currentUser.getId());
+        });
 
         // Forcer le rafraîchissement de l'interface utilisateur
         mainPanel.revalidate();
@@ -404,6 +464,9 @@ public class DriverDashboard extends JFrame {
         tripsScrollPane.repaint();
         scrollPane.revalidate();
         scrollPane.repaint();
+        
+        // Setup real-time validation for time field
+        setupTimeFieldValidation();
     }
     
     private void handleCreateTrip() {
@@ -490,7 +553,7 @@ public class DriverDashboard extends JFrame {
             }
             
             // Sauvegarde du trajet
-            dataManager.createTrip(trip);
+            tripService.createTrip(trip);
             JOptionPane.showMessageDialog(this, 
                 "Trajet créé avec succès", 
                 "Succès", 
@@ -519,11 +582,11 @@ public class DriverDashboard extends JFrame {
         }
         
         String passengerEmail = (String) pendingPassengersTable.getValueAt(selectedRow, 1);
-        User passenger = dataManager.getUserByEmail(passengerEmail);
+        User passenger = userService.getUserByEmail(passengerEmail);
         
         if (selectedTrip != null && passenger != null) {
             try {
-                dataManager.updateTripPassengerStatus(selectedTrip, passenger, "CONFIRMED");
+                tripService.updatePassengerStatus(selectedTrip, passenger, "CONFIRMED");
                 JOptionPane.showMessageDialog(this, "Demande acceptée avec succès");
                 refreshPendingPassengersTable();
             } catch (Exception e) {
@@ -540,11 +603,11 @@ public class DriverDashboard extends JFrame {
         }
         
         String passengerEmail = (String) pendingPassengersTable.getValueAt(selectedRow, 1);
-        User passenger = dataManager.getUserByEmail(passengerEmail);
+        User passenger = userService.getUserByEmail(passengerEmail);
         
         if (selectedTrip != null && passenger != null) {
             try {
-                dataManager.updateTripPassengerStatus(selectedTrip, passenger, "REJECTED");
+                tripService.updatePassengerStatus(selectedTrip, passenger, "REJECTED");
                 JOptionPane.showMessageDialog(this, "Demande refusée avec succès");
                 refreshPendingPassengersTable();
             } catch (Exception e) {
@@ -561,10 +624,10 @@ public class DriverDashboard extends JFrame {
         }
         
         String tripId = (String) tripsTable.getValueAt(selectedRow, 0);
-        Trip trip = dataManager.getTripById(tripId);
+        Trip trip = tripService.getTripById(tripId);
         
         if (trip != null) {
-            if (dataManager.deleteTrip(trip)) {
+            if (tripService.deleteTrip(trip)) {
                 JOptionPane.showMessageDialog(this, "Trajet supprimé avec succès");
                 refreshTripsTable();
             } else {
@@ -581,7 +644,7 @@ public class DriverDashboard extends JFrame {
         }
 
         String tripId = (String) tripsTable.getValueAt(selectedRow, 0);
-        Trip trip = dataManager.getTripById(tripId);
+        Trip trip = tripService.getTripById(tripId);
         
         if (trip != null) {
             // Créer une fenêtre de dialogue pour la modification
@@ -647,7 +710,7 @@ public class DriverDashboard extends JFrame {
             JButton saveButton = new JButton("Enregistrer");
             JButton cancelButton = new JButton("Annuler");
 
-            saveButton.addActionListener(_ -> {
+            saveButton.addActionListener(e ->{
                 try {
                     // Validation des champs
                     String departure = departureField.getText().trim();
@@ -668,21 +731,21 @@ public class DriverDashboard extends JFrame {
                     trip.setTripType(type);
 
                     // Sauvegarde dans la base de données
-                    if (dataManager.updateTrip(trip)) {
+                    if (tripService.updateTrip(trip)) {
                         JOptionPane.showMessageDialog(editDialog, "Trajet modifié avec succès");
                         editDialog.dispose();
                         refreshTripsTable();
                     } else {
                         JOptionPane.showMessageDialog(editDialog, "Erreur lors de la modification du trajet");
                     }
-                } catch (NumberFormatException e) {
+                } catch (NumberFormatException nfe) {
                     JOptionPane.showMessageDialog(editDialog, "Veuillez entrer des valeurs numériques valides pour les places et le prix");
-                } catch (Exception e) {
-                    JOptionPane.showMessageDialog(editDialog, "Erreur lors de la modification: " + e.getMessage());
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(editDialog, "Erreur lors de la modification: " + ex.getMessage());
                 }
             });
 
-            cancelButton.addActionListener(_ -> editDialog.dispose());
+            cancelButton.addActionListener(evt -> editDialog.dispose());
 
             buttonPanel.add(saveButton);
             buttonPanel.add(cancelButton);
@@ -710,7 +773,7 @@ public class DriverDashboard extends JFrame {
     
     private void refreshTripsTable() {
         tripsTableModel.setRowCount(0);
-        List<Trip> trips = dataManager.getAllTrips();
+        List<Trip> trips = tripService.getAllTrips();
         
         for (Trip trip : trips) {
             if (trip.getDriver().getEmail().equals(currentUser.getEmail())) {
@@ -732,7 +795,7 @@ public class DriverDashboard extends JFrame {
         int selectedRow = tripsTable.getSelectedRow();
         if (selectedRow >= 0) {
             String tripId = (String) tripsTable.getValueAt(selectedRow, 0);
-            selectedTrip = dataManager.getTripById(tripId);
+            selectedTrip = tripService.getTripById(tripId);
             if (selectedTrip != null) {
                 LOGGER.info("Trajet sélectionné: " + selectedTrip.getId());
                 refreshPendingPassengersTable();
@@ -769,4 +832,36 @@ public class DriverDashboard extends JFrame {
         gbc.gridx = 1;
         panel.add(field, gbc);
     }
-} 
+    
+    private void setupTimeFieldValidation() {
+        // Add real-time validation to time field
+        timeField.setToolTipText("Format: HH:mm (ex: 14:30)");
+        timeField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                validateTimeFieldFormat();
+            }
+        });
+        
+        // Add document listener for immediate feedback
+        timeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { validateTimeFieldFormat(); }
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { validateTimeFieldFormat(); }
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { validateTimeFieldFormat(); }
+        });
+    }
+    
+    private void validateTimeFieldFormat() {
+        String time = timeField.getText().trim();
+        if (!time.isEmpty() && !time.matches("^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$")) {
+            timeField.setBackground(new Color(255, 200, 200)); // Light red
+            timeField.setToolTipText("Format invalide! Utilisez HH:mm (ex: 14:30)");
+        } else {
+            timeField.setBackground(Color.WHITE);
+            timeField.setToolTipText("Format: HH:mm (ex: 14:30)");
+        }
+    }
+}

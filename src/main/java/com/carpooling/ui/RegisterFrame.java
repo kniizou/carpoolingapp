@@ -1,12 +1,26 @@
 package com.carpooling.ui;
 
-import com.carpooling.data.DataManager;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+
+import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JTextField;
+
 import com.carpooling.model.User;
-import javax.swing.*;
-import java.awt.*;
+import com.carpooling.service.IAuthService;
+import com.carpooling.service.IUserService;
+import com.carpooling.util.SecurityUtils;
 
 public class RegisterFrame extends JFrame {
-    private DataManager dataManager;
+    private final IUserService userService;
+    private final IAuthService authService;
     private JTextField nomField;
     private JTextField prenomField;
     private JTextField ageField;
@@ -14,8 +28,9 @@ public class RegisterFrame extends JFrame {
     private JPasswordField passwordField;
     private JComboBox<String> roleComboBox;
 
-    public RegisterFrame() {
-        dataManager = DataManager.getInstance();
+    public RegisterFrame(IUserService userService, IAuthService authService) {
+        this.userService = userService;
+        this.authService = authService;
         
         setTitle("Inscription");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
@@ -83,8 +98,8 @@ public class RegisterFrame extends JFrame {
         JButton registerButton = new JButton("S'inscrire");
         JButton cancelButton = new JButton("Annuler");
         
-        registerButton.addActionListener(_ -> handleRegistration());
-        cancelButton.addActionListener(_ -> dispose());
+        registerButton.addActionListener(e -> handleRegistration());
+        cancelButton.addActionListener(e -> dispose());
         
         buttonPanel.add(registerButton);
         buttonPanel.add(cancelButton);
@@ -112,11 +127,15 @@ public class RegisterFrame extends JFrame {
                 return;
             }
             
-            User newUser = new User(nom, prenom, age, email, password, role);
-            if (dataManager.addUser(newUser)) {
+            // Hash the password using BCrypt before creating the user
+            String hashedPassword = SecurityUtils.hashPassword(password);
+            User newUser = new User(nom, prenom, age, email, hashedPassword, role);
+            
+            if (userService.registerUser(newUser)) {
                 JOptionPane.showMessageDialog(this, "Inscription réussie !");
                 dispose();
-                new LoginFrame().setVisible(true);
+                // Note: We cannot create LoginFrame here without circular dependency
+                // This will be handled in the main application
             } else {
                 JOptionPane.showMessageDialog(this, "Erreur lors de l'inscription", 
                     "Erreur", JOptionPane.ERROR_MESSAGE);

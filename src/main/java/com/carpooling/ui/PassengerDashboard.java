@@ -1,22 +1,50 @@
 package com.carpooling.ui;
 
-import com.carpooling.data.DataManager;
-import com.carpooling.model.User;
-import com.carpooling.model.Trip;
-import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import java.awt.*;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
 import java.util.List;
-import java.util.ArrayList;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTable;
+import javax.swing.JTextField;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+import javax.swing.table.DefaultTableModel;
+
+import com.carpooling.model.Notification;
+import com.carpooling.model.NotificationManager;
+import com.carpooling.model.Trip;
+import com.carpooling.model.User;
+import com.carpooling.service.IAuthService;
+import com.carpooling.service.INotificationService;
+import com.carpooling.service.ITripService;
+import com.carpooling.service.IUserService;
+import com.carpooling.util.ValidationUtils;
+import com.carpooling.websocket.NotificationWebSocketClient;
+
 public class PassengerDashboard extends JFrame {
-    private DataManager dataManager;
-    private User currentUser;
-    private JTabbedPane tabbedPane;
+    // Services - for future full refactoring
+    private final IAuthService authService;
+    private final IUserService userService;
+    private final ITripService tripService;
+    
+    private final User currentUser;
+    private final JTabbedPane tabbedPane;
     private JTable searchResultsTable;
     private JTable myTripsTable;
     private JTable offersTable;
@@ -32,11 +60,15 @@ public class PassengerDashboard extends JFrame {
     private JTextField offerPriceField;
     private DefaultTableModel searchResultsTableModel;
     private DefaultTableModel offersTableModel;
+    private NotificationPanel notificationPanel;
+    private NotificationWebSocketClient webSocketClient;
     private static final Logger LOGGER = Logger.getLogger(PassengerDashboard.class.getName());
 
-    public PassengerDashboard() {
-        dataManager = DataManager.getInstance();
-        currentUser = dataManager.getCurrentUser();
+    public PassengerDashboard(IAuthService authService, IUserService userService, ITripService tripService) {
+        this.authService = authService;
+        this.userService = userService;
+        this.tripService = tripService;
+        this.currentUser = authService.getCurrentUser();
         
         setTitle("Dashboard Passager");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -65,10 +97,17 @@ public class PassengerDashboard extends JFrame {
         JButton logoutButton = new JButton("Déconnexion");
         logoutButton.setBackground(Color.WHITE);
         logoutButton.setForeground(primaryColor);
-        logoutButton.addActionListener(_ -> handleLogout());
+        logoutButton.addActionListener(e -> handleLogout());
         headerPanel.add(logoutButton, BorderLayout.EAST);
         
-        mainPanel.add(headerPanel, BorderLayout.NORTH);
+        // Create notification panel and add it below the header
+        notificationPanel = new NotificationPanel(currentUser);
+        
+        JPanel topPanel = new JPanel(new BorderLayout());
+        topPanel.add(headerPanel, BorderLayout.NORTH);
+        topPanel.add(notificationPanel, BorderLayout.CENTER);
+        
+        mainPanel.add(topPanel, BorderLayout.NORTH);
         
         // Onglets
         tabbedPane = new JTabbedPane();
@@ -78,9 +117,9 @@ public class PassengerDashboard extends JFrame {
         JPanel searchTripsPanel = createSearchTripsPanel();
         tabbedPane.addTab("Rechercher un Trajet", searchTripsPanel);
         
-        // Onglet Créer un Trajet
-        JPanel createTripPanel = createCreateTripPanel();
-        tabbedPane.addTab("Créer un Trajet", createTripPanel);
+        // Onglet Demander un Trajet (Request a Trip)
+        JPanel requestTripPanel = createRequestTripPanel();
+        tabbedPane.addTab("Demander un Trajet", requestTripPanel);
         
         // Onglet Mes Trajets
         JPanel myTripsPanel = createMyTripsPanel();
@@ -97,8 +136,17 @@ public class PassengerDashboard extends JFrame {
         // Charger les données
         refreshMyTripsTable();
         refreshOffersTable();
+        
+        // Show toast notifications for any existing unread notifications
+        SwingUtilities.invokeLater(() -> {
+            ToastNotificationManager.getInstance().showToastsForUser(currentUser.getId());
+        });
+        
+        // Connect to WebSocket for real-time notifications
+        webSocketClient = NotificationWebSocketClient.getInstance();
+        webSocketClient.connectAndRegister(currentUser.getId());
     }
-    
+
     private JPanel createSearchTripsPanel() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(Color.WHITE);
@@ -138,7 +186,7 @@ public class PassengerDashboard extends JFrame {
         
         // Bouton de recherche
         JButton searchButton = new JButton("Rechercher");
-        searchButton.addActionListener(_ -> handleSearch());
+        searchButton.addActionListener(e -> handleSearch());
         gbc.gridx = 0; gbc.gridy = 4;
         gbc.gridwidth = 2;
         searchPanel.add(searchButton, gbc);
@@ -159,12 +207,98 @@ public class PassengerDashboard extends JFrame {
         
         // Bouton de demande
         JButton requestButton = new JButton("Demander une place");
-        requestButton.addActionListener(_ -> handleRequestTrip());
+        requestButton.addActionListener(e -> handleRequestTrip());
         panel.add(requestButton, BorderLayout.SOUTH);
+        
+        // Auto-refresh functionality
+        enableAutoRefresh();
         
         return panel;
     }
-    
+
+    private JPanel createRequestTripPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(Color.WHITE);
+        
+        // Information panel
+        JPanel infoPanel = new JPanel();
+        infoPanel.setBackground(Color.WHITE);
+        infoPanel.add(new JLabel("<html><h3>Demander un Trajet</h3>" +
+            "<p>Vous ne trouvez pas le trajet parfait dans les recherches ?</p>" +
+            "<p>Créez une demande de trajet pour que les conducteurs puissent vous proposer leurs services.</p></html>"));
+        
+        JPanel formPanel = new JPanel(new GridBagLayout());
+        formPanel.setBackground(Color.WHITE);
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        
+        // Request form fields
+        JTextField requestDepartureField = new JTextField(20);
+        JTextField requestDestinationField = new JTextField(20);
+        JTextField requestDateField = new JTextField(20);
+        JTextField requestTimeField = new JTextField(20);
+        JTextField maxBudgetField = new JTextField(20);
+        
+        gbc.gridx = 0; gbc.gridy = 0;
+        formPanel.add(new JLabel("Départ souhaité:"), gbc);
+        gbc.gridx = 1;
+        formPanel.add(requestDepartureField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = 1;
+        formPanel.add(new JLabel("Destination souhaitée:"), gbc);
+        gbc.gridx = 1;
+        formPanel.add(requestDestinationField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = 2;
+        formPanel.add(new JLabel("Date souhaitée (YYYY-MM-DD):"), gbc);
+        gbc.gridx = 1;
+        formPanel.add(requestDateField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = 3;
+        formPanel.add(new JLabel("Heure souhaitée:"), gbc);
+        gbc.gridx = 1;
+        formPanel.add(requestTimeField, gbc);
+        
+        gbc.gridx = 0; gbc.gridy = 4;
+        formPanel.add(new JLabel("Budget maximum:"), gbc);
+        gbc.gridx = 1;
+        formPanel.add(maxBudgetField, gbc);
+        
+        // Buttons
+        JPanel buttonPanel = new JPanel(new FlowLayout());
+        buttonPanel.setBackground(Color.WHITE);
+        
+        JButton createRequestButton = new JButton("Publier la Demande");
+        createRequestButton.addActionListener(e -> handleCreateTripRequest(
+            requestDepartureField, requestDestinationField, requestDateField, 
+            requestTimeField, maxBudgetField));
+        
+        JButton clearButton = new JButton("Effacer");
+        clearButton.addActionListener(e -> {
+            requestDepartureField.setText("");
+            requestDestinationField.setText("");
+            requestDateField.setText("");
+            requestTimeField.setText("");
+            maxBudgetField.setText("");
+        });
+        
+        buttonPanel.add(createRequestButton);
+        buttonPanel.add(clearButton);
+        
+        gbc.gridx = 0; gbc.gridy = 5;
+        gbc.gridwidth = 2;
+        formPanel.add(buttonPanel, gbc);
+        
+        panel.add(infoPanel, BorderLayout.NORTH);
+        panel.add(formPanel, BorderLayout.CENTER);
+        
+        // Add time field validation for passenger request
+        setupTimeFieldValidation(requestTimeField);
+        
+        return panel;
+    }
+
     private JPanel createMyTripsPanel() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(Color.WHITE);
@@ -183,15 +317,39 @@ public class PassengerDashboard extends JFrame {
         
         // Bouton d'actualisation
         JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(_ -> refreshMyTripsTable());
+        refreshButton.addActionListener(e -> refreshMyTripsTable());
         panel.add(refreshButton, BorderLayout.SOUTH);
         
         return panel;
     }
-    
+
+    private JPanel createOfferPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(Color.WHITE);
+        
+        // Table des offres
+        String[] columnNames = {"ID", "Départ", "Destination", "Date", "Heure", "Places", "Prix", "Statut"};
+        offersTableModel = new DefaultTableModel(columnNames, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        offersTable = new JTable(offersTableModel);
+        JScrollPane scrollPane = new JScrollPane(offersTable);
+        panel.add(scrollPane, BorderLayout.CENTER);
+        
+        // Bouton d'actualisation
+        JButton refreshButton = new JButton("Actualiser");
+        refreshButton.addActionListener(e -> refreshOffersTable());
+        panel.add(refreshButton, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+
     private void refreshMyTripsTable() {
         myTripsTableModel.setRowCount(0);
-        List<Trip> trips = dataManager.getAllTrips();
+        List<Trip> trips = tripService.getAllTrips();
         
         for (Trip trip : trips) {
             for (User passenger : trip.getPassengers()) {
@@ -222,66 +380,61 @@ public class PassengerDashboard extends JFrame {
             }
         }
     }
-    
+
+    private void refreshOffersTable() {
+        offersTableModel.setRowCount(0);
+        List<Trip> trips = tripService.getAllTrips();
+        
+        for (Trip trip : trips) {
+            if (trip.getDriver().getId().equals(currentUser.getId())) {
+                offersTableModel.addRow(new Object[]{
+                    trip.getId(),
+                    trip.getDeparture(),
+                    trip.getDestination(),
+                    trip.getDate(),
+                    trip.getTime(),
+                    trip.getAvailableSeats(),
+                    trip.getPrice(),
+                    "Active"
+                });
+            }
+        }
+    }
+
     private void handleSearch() {
+        searchResultsTableModel.setRowCount(0);
+        
         String departure = departureField.getText().trim();
         String destination = destinationField.getText().trim();
         String date = dateField.getText().trim();
-        String maxPriceStr = maxPriceField.getText().trim();
+        String maxPriceText = maxPriceField.getText().trim();
         
-        double maxPrice = maxPriceStr.isEmpty() ? Double.MAX_VALUE : Double.parseDouble(maxPriceStr);
+        List<Trip> allTrips = tripService.getAllTrips();
         
-        searchResultsTableModel.setRowCount(0);
-        List<Trip> trips = dataManager.getAllTrips();
-        
-        System.out.println("Nombre total de trajets récupérés : " + trips.size());
-        System.out.println("Utilisateur actuel : " + currentUser.getEmail() + " (Rôle : " + currentUser.getRole() + ", ID : " + currentUser.getId() + ")");
-        
-        for (Trip trip : trips) {
-            // Vérifier que le trajet n'est pas déjà demandé ou accepté par le passager
-            boolean isAlreadyRequested = false;
-            boolean isAlreadyAccepted = false;
+        for (Trip trip : allTrips) {
+            boolean matches = true;
             
-            for (User passenger : trip.getPendingPassengers()) {
-                if (passenger.getId().equals(currentUser.getId())) {
-                    isAlreadyRequested = true;
-                    break;
+            if (!departure.isEmpty() && !trip.getDeparture().toLowerCase().contains(departure.toLowerCase())) {
+                matches = false;
+            }
+            if (!destination.isEmpty() && !trip.getDestination().toLowerCase().contains(destination.toLowerCase())) {
+                matches = false;
+            }
+            if (!date.isEmpty() && !trip.getDate().equals(date)) {
+                matches = false;
+            }
+            if (!maxPriceText.isEmpty()) {
+                try {
+                    double maxPrice = Double.parseDouble(maxPriceText);
+                    if (trip.getPrice() > maxPrice) {
+                        matches = false;
+                    }
+                } catch (NumberFormatException e) {
+                    // Ignore invalid price
                 }
             }
             
-            for (User passenger : trip.getPassengers()) {
-                if (passenger.getId().equals(currentUser.getId())) {
-                    isAlreadyAccepted = true;
-                    break;
-                }
-            }
-            
-            System.out.println("Analyse du trajet :");
-            System.out.println("- ID : " + trip.getId());
-            System.out.println("- Conducteur : " + trip.getDriver().getEmail() + " (Rôle : " + trip.getDriver().getRole() + ", ID : " + trip.getDriver().getId() + ")");
-            System.out.println("- Places disponibles : " + trip.getAvailableSeats());
-            System.out.println("- Déjà demandé : " + isAlreadyRequested);
-            System.out.println("- Déjà accepté : " + isAlreadyAccepted);
-            
-            // Vérifier si le trajet correspond aux critères de recherche
-            boolean matchesSearchCriteria = true;
-            
-            // Si au moins un critère de recherche est spécifié, vérifier les critères
-            if (!departure.isEmpty() || !destination.isEmpty() || !date.isEmpty() || !maxPriceStr.isEmpty()) {
-                matchesSearchCriteria = (departure.isEmpty() || trip.getDeparture().toLowerCase().contains(departure.toLowerCase())) &&
-                                      (destination.isEmpty() || trip.getDestination().toLowerCase().contains(destination.toLowerCase())) &&
-                                      (date.isEmpty() || trip.getDate().equals(date)) &&
-                                      trip.getPrice() <= maxPrice;
-            }
-            
-            if (!trip.getDriver().getId().equals(currentUser.getId()) && // Ne pas afficher ses propres trajets
-                trip.getAvailableSeats() > 0 &&
-                !isAlreadyRequested &&
-                !isAlreadyAccepted &&
-                matchesSearchCriteria) {
-                
-                System.out.println("Trajet ajouté à la liste des résultats");
-                
+            if (matches && trip.getAvailableSeats() > 0) {
                 searchResultsTableModel.addRow(new Object[]{
                     trip.getId(),
                     trip.getDriver().getName(),
@@ -290,22 +443,18 @@ public class PassengerDashboard extends JFrame {
                     trip.getDate(),
                     trip.getTime(),
                     trip.getAvailableSeats(),
-                    trip.getPrice() + "€",
+                    trip.getPrice(),
                     trip.getTripType()
                 });
             }
         }
         
-        System.out.println("Nombre de trajets affichés : " + searchResultsTableModel.getRowCount());
-        
-        if (searchResultsTableModel.getRowCount() == 0) {
-            JOptionPane.showMessageDialog(this,
-                "Aucun trajet ne correspond à vos critères de recherche",
-                "Aucun résultat",
-                JOptionPane.INFORMATION_MESSAGE);
+        // Enable auto-refresh after first search
+        if (isSearchActive() && !autoRefreshEnabled) {
+            enableAutoRefresh();
         }
     }
-    
+
     private void handleRequestTrip() {
         int selectedRow = searchResultsTable.getSelectedRow();
         if (selectedRow == -1) {
@@ -315,9 +464,8 @@ public class PassengerDashboard extends JFrame {
         }
 
         String tripId = (String) searchResultsTable.getValueAt(selectedRow, 0);
-        LOGGER.info("Demande de place pour le trajet ID: " + tripId);
+        LOGGER.info(() -> "Demande de place pour le trajet ID: " + tripId);
         
-        // Vérifier que l'ID n'est pas null ou vide
         if (tripId == null || tripId.trim().isEmpty()) {
             LOGGER.severe("L'ID du trajet est null ou vide");
             JOptionPane.showMessageDialog(this, "ID de trajet invalide", 
@@ -325,16 +473,16 @@ public class PassengerDashboard extends JFrame {
             return;
         }
         
-        Trip trip = dataManager.getTripById(tripId);
+        Trip trip = tripService.getTripById(tripId);
         
         if (trip == null) {
-            LOGGER.severe("Trajet non trouvé avec l'ID: " + tripId);
+            LOGGER.severe(() -> "Trajet non trouvé avec l'ID: " + tripId);
             JOptionPane.showMessageDialog(this, "Trajet non trouvé", 
                 "Erreur", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
-        LOGGER.info("Trajet trouvé - ID: " + trip.getId() + 
+        LOGGER.info(() -> "Trajet trouvé - ID: " + trip.getId() + 
                    ", Départ: " + trip.getDeparture() + 
                    ", Destination: " + trip.getDestination());
 
@@ -371,11 +519,46 @@ public class PassengerDashboard extends JFrame {
                 return;
             }
             
-            LOGGER.info("Ajout de la demande de place pour l'utilisateur: " + currentUser.getEmail());
+            LOGGER.info(() -> "Ajout de la demande de place pour l'utilisateur: " + currentUser.getEmail());
             
             // Ajouter le passager à la liste des demandes en attente
             trip.addPassenger(currentUser);
-            dataManager.updateTripPassengerStatus(trip, currentUser, "PENDING");
+            tripService.addPassengerToTrip(trip, currentUser, "PENDING");
+            
+            // Add a notification for the driver
+            NotificationManager.getInstance().addNotification(
+                trip.getDriver().getId(),
+                Notification.createInfoNotification(
+                    "Nouvelle demande de trajet: " + currentUser.getName() + 
+                    " souhaite rejoindre votre trajet de " + trip.getDeparture() + 
+                    " à " + trip.getDestination() + " le " + trip.getDate(),
+                    trip.getId()
+                )
+            );
+            
+            // Send WebSocket notification to the driver for real-time notification
+            if (webSocketClient != null && webSocketClient.isOpen()) {
+                webSocketClient.sendTripRequest(
+                    currentUser.getId(),
+                    trip.getDeparture(),
+                    trip.getDestination(),
+                    trip.getDate()
+                );
+            }
+            
+            // Add a confirmation notification for the current user
+            NotificationManager.getInstance().addNotification(
+                currentUser.getId(),
+                Notification.createSuccessNotification(
+                    "Vous avez demandé à rejoindre le trajet de " + 
+                    trip.getDeparture() + " à " + trip.getDestination() + 
+                    " le " + trip.getDate() + ". Vous serez notifié quand le conducteur aura répondu.",
+                    trip.getId()
+                )
+            );
+            
+            // Update the notification count in the UI
+            notificationPanel.updateNotificationCount();
             
             JOptionPane.showMessageDialog(this, "Votre demande a été envoyée au conducteur", 
                 "Succès", JOptionPane.INFORMATION_MESSAGE);
@@ -390,285 +573,193 @@ public class PassengerDashboard extends JFrame {
                 "Erreur", JOptionPane.ERROR_MESSAGE);
         }
     }
-    
-    private void handleLogout() {
-        dataManager.logout();
-        dispose();
-        new LoginFrame().setVisible(true);
-    }
 
-    private JPanel createCreateTripPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(Color.WHITE);
-        
-        JPanel formPanel = new JPanel(new GridBagLayout());
-        formPanel.setBackground(Color.WHITE);
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
-        
-        // Champs du formulaire
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        formPanel.add(new JLabel("Départ:"), gbc);
-        
-        JTextField departureField = new JTextField(20);
-        gbc.gridx = 1;
-        formPanel.add(departureField, gbc);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 1;
-        formPanel.add(new JLabel("Destination:"), gbc);
-        
-        JTextField destinationField = new JTextField(20);
-        gbc.gridx = 1;
-        formPanel.add(destinationField, gbc);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 2;
-        formPanel.add(new JLabel("Date:"), gbc);
-        
-        JSpinner.DateEditor dateEditor;
-        JSpinner dateSpinner = new JSpinner(new SpinnerDateModel());
-        dateEditor = new JSpinner.DateEditor(dateSpinner, "dd/MM/yyyy");
-        dateSpinner.setEditor(dateEditor);
-        gbc.gridx = 1;
-        formPanel.add(dateSpinner, gbc);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 3;
-        formPanel.add(new JLabel("Heure:"), gbc);
-        
-        SpinnerDateModel timeModel = new SpinnerDateModel();
-        JSpinner timeSpinner = new JSpinner(timeModel);
-        JSpinner.DateEditor timeEditor = new JSpinner.DateEditor(timeSpinner, "HH:mm");
-        timeSpinner.setEditor(timeEditor);
-        gbc.gridx = 1;
-        formPanel.add(timeSpinner, gbc);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 4;
-        formPanel.add(new JLabel("Prix maximum:"), gbc);
-        
-        SpinnerNumberModel priceModel = new SpinnerNumberModel(5.0, 0.0, 1000.0, 0.5);
-        JSpinner priceSpinner = new JSpinner(priceModel);
-        gbc.gridx = 1;
-        formPanel.add(priceSpinner, gbc);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 5;
-        formPanel.add(new JLabel("Type de trajet:"), gbc);
-        
-        String[] tripTypes = {"Occasionnel", "Régulier (École)", "Régulier (Travail)", "Régulier (Autre)"};
-        JComboBox<String> tripTypeCombo = new JComboBox<>(tripTypes);
-        gbc.gridx = 1;
-        formPanel.add(tripTypeCombo, gbc);
-        
-        // Panel pour les jours de la semaine (visible uniquement pour les trajets réguliers)
-        JPanel daysPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        daysPanel.setBackground(Color.WHITE);
-        JCheckBox[] dayCheckboxes = new JCheckBox[7];
-        String[] days = {"Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"};
-        for (int i = 0; i < 7; i++) {
-            dayCheckboxes[i] = new JCheckBox(days[i]);
-            daysPanel.add(dayCheckboxes[i]);
-        }
-        daysPanel.setVisible(false);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 6;
-        gbc.gridwidth = 2;
-        formPanel.add(daysPanel, gbc);
-        
-        // Écouteur pour afficher/masquer les jours de la semaine
-        tripTypeCombo.addActionListener(_ -> {
-            String selectedType = (String) tripTypeCombo.getSelectedItem();
-            daysPanel.setVisible(selectedType != null && selectedType.startsWith("Régulier"));
-        });
-        
-        // Boutons
-        JPanel buttonPanel = new JPanel();
-        buttonPanel.setBackground(Color.WHITE);
-        
-        JButton createButton = new JButton("Créer le trajet");
-        createButton.addActionListener(_ -> {
-            String departure = departureField.getText();
-            String destination = destinationField.getText();
-            Date date = (Date) dateSpinner.getValue();
-            Date time = (Date) timeSpinner.getValue();
-            double maxPrice = (Double) priceSpinner.getValue();
-            String tripType = (String) tripTypeCombo.getSelectedItem();
+    private void handleCreateTripRequest(JTextField departureField, JTextField destinationField, 
+                                       JTextField dateField, JTextField timeField, JTextField budgetField) {
+        try {
+            String departure = departureField.getText().trim();
+            String destination = destinationField.getText().trim();
+            String date = dateField.getText().trim();
+            String time = timeField.getText().trim();
+            String budgetText = budgetField.getText().trim();
             
-            if (departure.isEmpty() || destination.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Veuillez remplir tous les champs", 
+            if (departure.isEmpty() || destination.isEmpty() || date.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Veuillez remplir au moins le départ, la destination et la date", 
                     "Erreur", JOptionPane.ERROR_MESSAGE);
                 return;
             }
             
-            // Formater la date et l'heure
-            SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy");
-            SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm");
-            String dateStr = dateFormat.format(date);
-            String timeStr = timeFormat.format(time);
-            
-            // Créer le trajet
-            Trip newTrip = new Trip(currentUser, departure, destination, dateStr, timeStr, 1, maxPrice);
-            newTrip.setTripType(tripType);
-            
-            // Si c'est un trajet régulier, ajouter les jours sélectionnés
-            if (tripType.startsWith("Régulier")) {
-                List<String> selectedDays = new ArrayList<>();
-                for (int i = 0; i < 7; i++) {
-                    if (dayCheckboxes[i].isSelected()) {
-                        selectedDays.add(days[i]);
-                    }
-                }
-                newTrip.setRecurringDays(selectedDays);
+            double budget = 0;
+            if (!budgetText.isEmpty()) {
+                budget = Double.parseDouble(budgetText);
             }
             
-            try {
-                dataManager.createTrip(newTrip);
-                JOptionPane.showMessageDialog(this, "Trajet créé avec succès");
-                refreshMyTripsTable();
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(this, "Impossible de créer le trajet : " + e.getMessage(), "Erreur", JOptionPane.ERROR_MESSAGE);
+            // Create a trip request (as a special trip type)
+            Trip tripRequest = new Trip(currentUser, departure, destination, date, time, 1, budget, "DEMANDE", "");
+            tripService.createTrip(tripRequest);
+            
+            // Notification de succès
+            NotificationManager.getInstance().addNotification(
+                currentUser.getId(),
+                Notification.createSuccessNotification(
+                    "Votre demande de trajet de " + departure + " à " + destination + " a été publiée avec succès",
+                    tripRequest.getId()
+                )
+            );
+            
+            JOptionPane.showMessageDialog(this, "Demande de trajet publiée avec succès!", "Succès", JOptionPane.INFORMATION_MESSAGE);
+            
+            // Effacer les champs
+            departureField.setText("");
+            destinationField.setText("");
+            dateField.setText("");
+            timeField.setText("");
+            budgetField.setText("");
+            
+            // Actualiser la notification
+            notificationPanel.updateNotificationCount();
+            
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Budget invalide", "Erreur", JOptionPane.ERROR_MESSAGE);
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Erreur lors de la création de la demande", e);
+            JOptionPane.showMessageDialog(this, "Erreur lors de la création de la demande: " + e.getMessage(), 
+                "Erreur", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void handleLogout() {
+        authService.logout();
+        dispose();
+        // Note: Creating LoginFrame would create circular dependency
+        // This will be handled by application controller
+    }
+    
+    // Auto-refresh functionality
+    private Timer searchRefreshTimer;
+    private boolean autoRefreshEnabled = false;
+    private final int REFRESH_INTERVAL_MS = 30000; // 30 seconds
+    
+    /**
+     * Enable auto-refresh for search results
+     */
+    private void enableAutoRefresh() {
+        if (searchRefreshTimer != null) {
+            searchRefreshTimer.stop();
+        }
+        
+        searchRefreshTimer = new Timer(REFRESH_INTERVAL_MS, e -> {
+            if (autoRefreshEnabled && isSearchActive()) {
+                SwingUtilities.invokeLater(() -> {
+                    refreshSearchResults();
+                });
             }
         });
         
-        buttonPanel.add(createButton);
-        
-        gbc.gridx = 0;
-        gbc.gridy = 7;
-        gbc.gridwidth = 2;
-        formPanel.add(buttonPanel, gbc);
-        
-        panel.add(formPanel, BorderLayout.CENTER);
-        
-        return panel;
+        autoRefreshEnabled = true;
+        searchRefreshTimer.start();
     }
-
-    private JPanel createOfferPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(Color.WHITE);
-        
-        // Panel du formulaire
-        JPanel formPanel = new JPanel(new GridBagLayout());
-        formPanel.setBackground(Color.WHITE);
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(5, 5, 5, 5);
-        gbc.fill = GridBagConstraints.HORIZONTAL;
-        
-        // Champs du formulaire
-        offerDepartureField = new JTextField(20);
-        offerDestinationField = new JTextField(20);
-        offerDateField = new JTextField(20);
-        offerTimeField = new JTextField(20);
-        offerPriceField = new JTextField(20);
-        
-        gbc.gridx = 0; gbc.gridy = 0;
-        formPanel.add(new JLabel("Départ:"), gbc);
-        gbc.gridx = 1;
-        formPanel.add(offerDepartureField, gbc);
-        
-        gbc.gridx = 0; gbc.gridy = 1;
-        formPanel.add(new JLabel("Destination:"), gbc);
-        gbc.gridx = 1;
-        formPanel.add(offerDestinationField, gbc);
-        
-        gbc.gridx = 0; gbc.gridy = 2;
-        formPanel.add(new JLabel("Date (YYYY-MM-DD):"), gbc);
-        gbc.gridx = 1;
-        formPanel.add(offerDateField, gbc);
-        
-        gbc.gridx = 0; gbc.gridy = 3;
-        formPanel.add(new JLabel("Heure (HH:mm):"), gbc);
-        gbc.gridx = 1;
-        formPanel.add(offerTimeField, gbc);
-        
-        gbc.gridx = 0; gbc.gridy = 4;
-        formPanel.add(new JLabel("Prix maximum:"), gbc);
-        gbc.gridx = 1;
-        formPanel.add(offerPriceField, gbc);
-        
-        // Bouton de création
-        JButton createButton = new JButton("Créer l'offre");
-        createButton.addActionListener(_ -> handleCreateTrip());
-        gbc.gridx = 0; gbc.gridy = 5;
-        gbc.gridwidth = 2;
-        formPanel.add(createButton, gbc);
-        
-        panel.add(formPanel, BorderLayout.NORTH);
-        
-        // Table des offres
-        String[] columnNames = {"ID", "Départ", "Destination", "Date", "Heure", "Prix", "Statut"};
-        offersTableModel = new DefaultTableModel(columnNames, 0) {
+    
+    /**
+     * Disable auto-refresh
+     */
+    private void disableAutoRefresh() {
+        autoRefreshEnabled = false;
+        if (searchRefreshTimer != null) {
+            searchRefreshTimer.stop();
+        }
+    }
+    
+    /**
+     * Check if search is currently active (has search criteria)
+     */
+    private boolean isSearchActive() {
+        return !departureField.getText().trim().isEmpty() || 
+               !destinationField.getText().trim().isEmpty() || 
+               !dateField.getText().trim().isEmpty() || 
+               !maxPriceField.getText().trim().isEmpty();
+    }
+    
+    /**
+     * Refresh search results with current criteria
+     */
+    private void refreshSearchResults() {
+        if (isSearchActive()) {
+            // Store current selection
+            int selectedRow = searchResultsTable.getSelectedRow();
+            String selectedTripId = null;
+            if (selectedRow >= 0) {
+                selectedTripId = (String) searchResultsTableModel.getValueAt(selectedRow, 0);
+            }
+            
+            // Refresh results
+            handleSearch();
+            
+            // Restore selection if possible
+            if (selectedTripId != null) {
+                for (int i = 0; i < searchResultsTableModel.getRowCount(); i++) {
+                    if (selectedTripId.equals(searchResultsTableModel.getValueAt(i, 0))) {
+                        searchResultsTable.setRowSelectionInterval(i, i);
+                        break;
+                    }
+                }
+            }
+            
+            // Add visual feedback
+            searchResultsTable.repaint();
+        }
+    }
+    
+    /**
+     * Setup real-time validation for time input field
+     */
+    private void setupTimeFieldValidation(JTextField timeField) {
+        timeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
-            public boolean isCellEditable(int row, int column) {
-                return false;
+            public void insertUpdate(javax.swing.event.DocumentEvent e) {
+                validateTimeFieldFormat(timeField);
             }
-        };
-        offersTable = new JTable(offersTableModel);
-        JScrollPane scrollPane = new JScrollPane(offersTable);
-        panel.add(scrollPane, BorderLayout.CENTER);
+            
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {
+                validateTimeFieldFormat(timeField);
+            }
+            
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {
+                validateTimeFieldFormat(timeField);
+            }
+        });
         
-        // Bouton d'actualisation
-        JButton refreshButton = new JButton("Actualiser");
-        refreshButton.addActionListener(_ -> refreshOffersTable());
-        panel.add(refreshButton, BorderLayout.SOUTH);
-        
-        return panel;
+        // Set placeholder/hint text
+        timeField.setToolTipText("Format: HH:MM (exemple: 14:30)");
     }
     
-    private void handleCreateTrip() {
+    /**
+     * Validate time field format and provide visual feedback
+     */
+    private void validateTimeFieldFormat(JTextField timeField) {
+        String input = timeField.getText().trim();
+        
+        if (input.isEmpty()) {
+            // Reset to normal appearance for empty field
+            timeField.setBackground(Color.WHITE);
+            timeField.setToolTipText("Format: HH:MM (exemple: 14:30)");
+            return;
+        }
+        
+        // Check time format using ValidationUtils
         try {
-            String departure = offerDepartureField.getText().trim();
-            String destination = offerDestinationField.getText().trim();
-            String date = offerDateField.getText().trim();
-            String time = offerTimeField.getText().trim();
-            double price = Double.parseDouble(offerPriceField.getText().trim());
-            
-            if (departure.isEmpty() || destination.isEmpty() || date.isEmpty() || time.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Veuillez remplir tous les champs");
-                return;
+            if (ValidationUtils.isValidTimeFormat(input)) {
+                timeField.setBackground(Color.WHITE);
+                timeField.setToolTipText("Format valide");
+            } else {
+                timeField.setBackground(new Color(255, 200, 200)); // Light red
+                timeField.setToolTipText("Format invalide. Utilisez HH:MM (exemple: 14:30)");
             }
-            
-            Trip trip = new Trip(currentUser, departure, destination, date, time, 1, price);
-            dataManager.createTrip(trip);
-            
-            JOptionPane.showMessageDialog(this, "Trajet créé avec succès");
-            clearOfferFields();
-            refreshOffersTable();
-            
-        } catch (NumberFormatException e) {
-            JOptionPane.showMessageDialog(this, "Veuillez entrer un prix valide");
         } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Erreur lors de la création du trajet: " + e.getMessage());
+            timeField.setBackground(new Color(255, 200, 200)); // Light red
+            timeField.setToolTipText("Format invalide. Utilisez HH:MM (exemple: 14:30)");
         }
     }
-    
-    private void refreshOffersTable() {
-        offersTableModel.setRowCount(0);
-        List<Trip> trips = dataManager.getAllTrips();
-        
-        for (Trip trip : trips) {
-            if (trip.getDriver().equals(currentUser)) {
-                offersTableModel.addRow(new Object[]{
-                    trip.getId(),
-                    trip.getDeparture(),
-                    trip.getDestination(),
-                    trip.getDate(),
-                    trip.getTime(),
-                    trip.getPrice() + "€",
-                    trip.getPassengers().isEmpty() ? "En attente" : "Accepté"
-                });
-            }
-        }
-    }
-    
-    private void clearOfferFields() {
-        offerDepartureField.setText("");
-        offerDestinationField.setText("");
-        offerDateField.setText("");
-        offerTimeField.setText("");
-        offerPriceField.setText("");
-    }
-} 
+}

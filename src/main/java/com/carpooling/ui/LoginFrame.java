@@ -1,19 +1,38 @@
 package com.carpooling.ui;
 
-import com.carpooling.data.DataManager;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JTextField;
+
 import com.carpooling.model.User;
-import javax.swing.*;
-import java.awt.*;
+import com.carpooling.service.IAuthService;
+import com.carpooling.service.ITripService;
+import com.carpooling.service.IUserService;
 
 public class LoginFrame extends JFrame {
     private JTextField emailField;
     private JPasswordField passwordField;
     private JButton loginButton;
     private JButton registerButton;
-    private DataManager dataManager;
+    private final IAuthService authService;
+    private final IUserService userService;
+    private final ITripService tripService;
 
-    public LoginFrame() {
-        dataManager = DataManager.getInstance();
+    public LoginFrame(IAuthService authService, IUserService userService, ITripService tripService) {
+        this.authService = authService;
+        this.userService = userService;
+        this.tripService = tripService;
         
         setTitle("Covoiturage - Connexion");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
@@ -81,13 +100,13 @@ public class LoginFrame extends JFrame {
         loginButton.setBackground(primaryColor);
         loginButton.setForeground(Color.WHITE);
         loginButton.setFocusPainted(false);
-        loginButton.addActionListener(_ -> handleLogin());
+        loginButton.addActionListener(e -> handleLogin());
         
         registerButton = new JButton("Inscription");
         registerButton.setBackground(primaryColor);
         registerButton.setForeground(Color.WHITE);
         registerButton.setFocusPainted(false);
-        registerButton.addActionListener(_ -> openRegistration());
+        registerButton.addActionListener(e -> openRegistration());
         
         buttonPanel.add(loginButton);
         buttonPanel.add(registerButton);
@@ -105,8 +124,8 @@ public class LoginFrame extends JFrame {
         String email = emailField.getText();
         String password = new String(passwordField.getPassword());
         
-        if (dataManager.authenticateUser(email, password)) {
-            User currentUser = dataManager.getCurrentUser();
+        if (authService.authenticate(email, password)) {
+            User currentUser = authService.getCurrentUser();
             JOptionPane.showMessageDialog(this, "Connexion réussie!");
             
             // Ouvrir le dashboard approprié selon le rôle
@@ -130,22 +149,22 @@ public class LoginFrame extends JFrame {
     }
     
     private void openRegistration() {
-        RegisterFrame registerFrame = new RegisterFrame();
+        RegisterFrame registerFrame = new RegisterFrame(userService, authService);
         registerFrame.setVisible(true);
     }
     
     private void openAdminDashboard() {
-        AdminDashboard adminDashboard = new AdminDashboard();
+        AdminDashboard adminDashboard = new AdminDashboard(authService, userService, tripService);
         adminDashboard.setVisible(true);
     }
     
     private void openDriverDashboard() {
-        DriverDashboard driverDashboard = new DriverDashboard();
+        DriverDashboard driverDashboard = new DriverDashboard(authService, userService, tripService);
         driverDashboard.setVisible(true);
     }
     
     private void openPassengerDashboard() {
-        PassengerDashboard passengerDashboard = new PassengerDashboard();
+        PassengerDashboard passengerDashboard = new PassengerDashboard(authService, userService, tripService);
         passengerDashboard.setVisible(true);
     }
 } 

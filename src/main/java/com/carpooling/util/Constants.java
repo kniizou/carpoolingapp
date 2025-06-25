@@ -64,4 +64,4 @@ public class Constants {
     private Constants() {
         // Empêcher l'instanciation
     }
-} 
+}
